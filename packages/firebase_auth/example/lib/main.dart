@@ -154,6 +154,7 @@ class _PhoneNumberSignInPageState extends State<PhoneNumberSignInPage> {
   String _verificationCode;
 
   StreamSubscription<PhoneSignInEvent> _phoneSignInEventSubscription;
+  FocusNode _phoneNumberFocusNode;
 
   @override
   void initState() {
@@ -170,6 +171,15 @@ class _PhoneNumberSignInPageState extends State<PhoneNumberSignInPage> {
           break;
       }
     });
+
+    _phoneNumberFocusNode = new FocusNode();
+
+    _phoneNumberFocusNode.addListener(() {
+      if (_phoneNumberFocusNode.hasFocus) {
+        _testShowPhoneAutoCompleteHint();
+        FocusScope.of(context).requestFocus(_phoneNumberFocusNode);
+      }
+    });
   }
 
   @override
@@ -177,6 +187,10 @@ class _PhoneNumberSignInPageState extends State<PhoneNumberSignInPage> {
     super.dispose();
     if (_phoneSignInEventSubscription != null) {
       _phoneSignInEventSubscription.cancel();
+    }
+
+    if (_phoneNumberFocusNode != null) {
+      _phoneNumberFocusNode.dispose();
     }
   }
 
@@ -228,6 +242,16 @@ class _PhoneNumberSignInPageState extends State<PhoneNumberSignInPage> {
       assert(user.uid == currentUser.uid);
 
       return 'resendVerificationCode succeeded: $user';
+    } on PlatformException catch (e) {
+      return _handlePhoneSignInError(e);
+    }
+  }
+
+  Future<String> _testShowPhoneAutoCompleteHint() async {
+    try {
+      final PhoneNumberHint phoneNumberHint =
+          await _auth.showPhoneAutoCompleteHint();
+      return 'showPhoneAutoCompleteHint succeeded: $phoneNumberHint';
     } on PlatformException catch (e) {
       return _handlePhoneSignInError(e);
     }
@@ -371,6 +395,7 @@ class _PhoneNumberSignInPageState extends State<PhoneNumberSignInPage> {
                       keyboardType: TextInputType.phone,
                       onSaved: _handlePhoneNumberSaved,
                       validator: _validatePhoneNumber,
+                      focusNode: _phoneNumberFocusNode,
                     ),
                     new Container(
                       padding: const EdgeInsets.all(20.0),
@@ -389,10 +414,11 @@ class _PhoneNumberSignInPageState extends State<PhoneNumberSignInPage> {
               ),
             ),
             new Center(
-                child: new Text(
-              "Step 2",
-              style: Theme.of(context).textTheme.headline,
-            )),
+              child: new Text(
+                "Step 2",
+                style: Theme.of(context).textTheme.headline,
+              ),
+            ),
             new Expanded(
               child: new Form(
                 key: _verificationCodeFormKey,

@@ -4,11 +4,22 @@
 
 package io.flutter.plugins.firebaseauth;
 
+import android.app.Activity;
+import android.app.PendingIntent;
+import android.content.Intent;
+import android.content.IntentSender;
 import android.net.Uri;
 import android.support.annotation.NonNull;
+import android.support.v4.app.FragmentActivity;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseArray;
+import com.google.android.gms.auth.api.Auth;
+import com.google.android.gms.auth.api.credentials.Credential;
+import com.google.android.gms.auth.api.credentials.CredentialPickerConfig;
+import com.google.android.gms.auth.api.credentials.HintRequest;
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.Task;
 import com.google.common.collect.ImmutableList;
@@ -37,11 +48,13 @@ import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry;
+import io.flutter.plugin.common.PluginRegistry.ActivityResultListener;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Flutter plugin for Firebase Auth. */
-public class FirebaseAuthPlugin implements MethodCallHandler {
+public class FirebaseAuthPlugin implements MethodCallHandler, ActivityResultListener {
   private static final String TAG = FirebaseAuthPlugin.class.getSimpleName();
   private final PluginRegistry.Registrar registrar;
   private final FirebaseAuth firebaseAuth;
@@ -70,6 +83,11 @@ public class FirebaseAuthPlugin implements MethodCallHandler {
   private static final String PHONE_SIGN_IN_UNAUTHORIZED_ERROR = "UNAUTHORIZED";
   private static final String PHONE_SIGN_IN_API_NOT_AVAILABLE_ERROR = "API_NOT_AVAILABLE";
   private static final String PHONE_SIGN_IN_NO_FOREGROUND_ACTIVITY_ERROR = "NO_FOREGROUND_ACTIVITY";
+  private static final String PHONE_SIGN_IN_PHONE_NUMBER_HINT = "PHONE_NUMBER_HINT";
+  private static final int RC_PHONE_HINT = 22;
+  private static final AtomicInteger SAFE_ID = new AtomicInteger(10);
+
+  private Result pendingResult;
 
   public static void registerWith(PluginRegistry.Registrar registrar) {
     MethodChannel methodChannel =
@@ -120,6 +138,9 @@ public class FirebaseAuthPlugin implements MethodCallHandler {
         break;
       case "verifyPhoneNumber":
         handleVerifyPhoneNumber(call, result);
+        break;
+      case "showPhoneAutoCompleteHint":
+        handleShowPhoneAutoCompleteHint(call, result);
         break;
       case "signOut":
         handleSignOut(call, result);
@@ -339,6 +360,115 @@ public class FirebaseAuthPlugin implements MethodCallHandler {
 
     String code = call.argument("code");
     verifyPhoneNumberWithCode(phoneVerificationId, code, result);
+  }
+
+  private void handleShowPhoneAutoCompleteHint(MethodCall call, final Result result) {
+    if (!runningInForegroundActivity(result)) return;
+
+    pendingResult = result;
+    showPhoneAutoCompleteHint();
+  }
+
+  private void showPhoneAutoCompleteHint() {
+    try {
+      startIntentSenderForResult(getPhoneHintIntent().getIntentSender(), RC_PHONE_HINT);
+    } catch (IntentSender.SendIntentException e) {
+      Log.e(TAG, "Unable to start phone hint intent", e);
+      pendingResult.error(ERROR_REASON_EXCEPTION, e.getMessage(), null);
+    }
+  }
+
+  private void startIntentSenderForResult(IntentSender sender, int requestCode)
+      throws IntentSender.SendIntentException {
+    registrar.activity().startIntentSenderForResult(sender, requestCode, null, 0, 0, 0, null);
+  }
+
+  private static int getSafeAutoManageId() {
+    return SAFE_ID.getAndIncrement();
+  }
+
+  private PendingIntent getPhoneHintIntent() {
+    GoogleApiClient client =
+        new GoogleApiClient.Builder(registrar.context())
+            .addApi(Auth.CREDENTIALS_API)
+            .enableAutoManage(
+                (FragmentActivity) registrar.activity(),
+                getSafeAutoManageId(),
+                new GoogleApiClient.OnConnectionFailedListener() {
+                  @Override
+                  public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+                    String errorMessage =
+                        "Client connection failed: " + connectionResult.getErrorMessage();
+                    Log.e(TAG, errorMessage);
+                    pendingResult.error(ERROR_REASON_EXCEPTION, errorMessage, null);
+                  }
+                })
+            .build();
+
+    HintRequest hintRequest =
+        new HintRequest.Builder()
+            .setHintPickerConfig(
+                new CredentialPickerConfig.Builder().setShowCancelButton(true).build())
+            .setPhoneNumberIdentifierSupported(true)
+            .setEmailAddressIdentifierSupported(false)
+            .build();
+
+    return Auth.CredentialsApi.getHintPickerIntent(client, hintRequest);
+  }
+
+  @Override
+  public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+    Log.d(TAG, "~~~ onActivityResult ~~~ ");
+
+    if (requestCode == RC_PHONE_HINT) {
+      if (resultCode == Activity.RESULT_OK && data != null) {
+        Credential cred = data.getParcelableExtra(Credential.EXTRA_KEY);
+
+        if (cred != null) {
+          // Hint selector does not always return phone numbers in e164 format.
+          // To accommodate either case, we normalize to e164 with best effort
+          final String unformattedPhone = cred.getId();
+          final String formattedPhone =
+              PhoneNumberUtils.formatUsingCurrentCountry(unformattedPhone, registrar.context());
+
+          if (formattedPhone == null) {
+            String errorMessage =
+                "Unable to normalize phone number from hint selector:" + unformattedPhone;
+
+            Log.e(TAG, errorMessage);
+            pendingResult.error(ERROR_REASON_EXCEPTION, errorMessage, null);
+            return true;
+          }
+
+          final PhoneNumber phoneNumber = PhoneNumberUtils.getPhoneNumber(formattedPhone);
+
+          ImmutableMap.Builder<String, String> builder = ImmutableMap.<String, String>builder();
+
+          if (PhoneNumber.isValid(phoneNumber)) {
+            Log.d(TAG, "PhoneNumber: " + phoneNumber.getPhoneNumber());
+            builder.put("phoneNumber", phoneNumber.getPhoneNumber());
+          }
+
+          if (PhoneNumber.isCountryValid(phoneNumber)) {
+            Log.d(TAG, "CountryCode: " + phoneNumber.getCountryIso());
+            builder.put("countryCode", phoneNumber.getCountryIso());
+          }
+
+          pendingResult.success(builder.build());
+
+          return true;
+        }
+      } else {
+        Log.d(
+            TAG,
+            "onActivityResult ~ resultCode: "
+                + resultCode
+                + ", data: "
+                + String.valueOf((data != null)));
+      }
+    }
+
+    return false;
   }
 
   private void handleSignOut(MethodCall call, final Result result) {

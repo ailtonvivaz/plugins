@@ -87,6 +87,21 @@ class FirebaseUser extends UserInfo {
   }
 }
 
+class PhoneNumberHint {
+  String _phoneNumber;
+  String _countryCode;
+
+  PhoneNumberHint(this._phoneNumber, this._countryCode);
+
+  String get phoneNumber => _phoneNumber;
+  String get countryCode => _countryCode;
+
+  @override
+  String toString() {
+    return 'PhoneNumberHint{_phoneNumber: $_phoneNumber, _countryCode: $_countryCode}';
+  }
+}
+
 enum PhoneSignInError {
   INVALID_REQUEST,
   SMS_QUOTA_EXCEEDED,
@@ -103,7 +118,7 @@ enum PhoneSignInEvent {
   ///
   /// Auto-verification by Google Play services could not be completed
   /// in the provided timeout.
-  CODE_AUTO_RETRIEVAL_TIMEOUT
+  CODE_AUTO_RETRIEVAL_TIMEOUT,
 }
 
 PhoneSignInEvent stringToPhoneSignInEventEnum(String event) {
@@ -386,6 +401,17 @@ class FirebaseAuth {
         <String, dynamic>{'phoneNumber': phoneNumber, 'timeout': timeout});
     final FirebaseUser currentUser = new FirebaseUser._(data);
     return currentUser;
+  }
+
+  /// showPhoneAutoCompleteHint.
+  Future<PhoneNumberHint> showPhoneAutoCompleteHint() async {
+    final Map<String, String> data =
+        await channel.invokeMethod('showPhoneAutoCompleteHint');
+
+    final PhoneNumberHint phoneNumberHint =
+        new PhoneNumberHint(data['phoneNumber'], data['countryCode']);
+
+    return phoneNumberHint;
   }
 
   Future<Null> signOut() async {
